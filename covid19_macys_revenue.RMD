@@ -1,0 +1,413 @@
+---
+title: "Macy's Revenue Prediction"
+author: "Yiyang Duanmu"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Import packages and data
+
+```{r}
+library(forecast)
+library(zoo)
+library(ggplot2)
+library(astsa)
+library(patchwork)
+
+macy <- read.csv("~/Downloads/MacyRevenue.csv")
+ama <- read.csv("~/Downloads/AmazonRevenue.csv")
+ur <- read.csv("~/Downloads/QuarterlyUR.csv")
+gdpg <- read.csv("~/Downloads/GDPGrowthRate.csv")
+
+macy.ts <- ts(macy$Revenue, start = c(2008,4), end = c(2022,2), frequency = 4)
+ama.ts <- ts(ama$Revenue, start = c(2009,1), end = c(2022,2), frequency = 4)
+ur.ts <- ts(ur$UR, start = c(2008,4), end = c(2022,2), frequency = 4)
+gdpg.ts <- ts(gdpg$GDP.Growth.Rate, start = c(2008,4), end = c(2022,2), frequency = 4)
+```
+
+# Split data set
+
+```{r}
+n <- length(macy.ts)
+stepsAhead <- 10
+nTrain <- n-stepsAhead
+
+train.m.ts <- window(macy.ts, end = c(2019,4), frequency = 4)
+valid.m.ts <- window(macy.ts, start = c(2020,1), frequency = 4)
+```
+
+# Navie Forecast
+
+```{r}
+naive <- naive(train.m.ts,h = 10)
+snaive <- snaive(train.m.ts,h = 10)
+accuracy(naive, valid.m.ts)
+accuracy(snaive, valid.m.ts)
+
+autoplot(train.m.ts, ylab="Macy's Revenue", main = "Naive & Seasonal Naive Forecast")+
+  autolayer(valid.m.ts, series = "Observed")+
+  autolayer(naive, series = "Naive", PI=F,lwd = 0.8)+
+  autolayer(snaive, series = "Seasonal Naive",PI=F,lwd = 0.8)
+
+checkresiduals(naive)
+checkresiduals(snaive)
+```
+
+# Moving average smoothing: centered and trailing
+
+```{r}
+# center, roll mean
+ma.centered <- ma(macy.ts, order = 4, centre = T) # centered
+w <- 4
+
+ma.trailing <- rollmean(train.m.ts, k = w, align = "right") # mean
+ma.trailing.max<- rollmax(train.m.ts, k = w, align = "right") # max
+ma.trailing.median <- rollmedian(train.m.ts, k = 5, align = "right") # median
+ma.trailing.sum<- rollsum(train.m.ts, k = w, aligh="right") # sum
+
+autoplot(macy.ts, ylab="Revenue", series = "Observed")+
+  autolayer(ma.centered, series = "Moving Average Centered", lwd=1.5)+
+  autolayer(ma.trailing, series = "Moving Mean", lwd=1.5)+
+  autolayer(ma.trailing.median, series = "Moving Median", lwd=1.5)+
+  autolayer(ma.trailing.max, series = "Moving Max", lwd=1.5)
+
+# One Step Ahead Rolling Forecast(rollmean)
+
+last.ma <- tail(ma.trailing, 1)
+
+ma.trailing.pred <- ts(rep(last.ma, stepsAhead),
+                       start = c(2020,1),
+                       end = c(2022,2),frequency =4)
+# actual
+valid.mean = ts(rep(mean(valid.m.ts), stepsAhead),
+                start = c(2020, 1),
+                end = c(2022, 2),
+                frequency = 4)
+
+# looping
+ma.trailing.pred.rolling.mean <- rep(NA, stepsAhead)
+
+start.year = 2008
+w <- 10
+for(i in 1:stepsAhead){
+  #i = 1
+  nTrain <- n - stepsAhead + (i-1)
+  train.ts <- window(macy.ts,start=c(2008,4),end=c(start.year, nTrain+3))
+  ma.trailing.mean = rollmean(train.ts, k = w, align = "right")
+  # our long term forecast
+  last.ma.mean <- tail(ma.trailing.mean, 1)
+  ma.trailing.pred.rolling.mean[i] <- last.ma.mean
+}
+
+ma.roll.ts.mean <- ts(ma.trailing.pred.rolling.mean, 
+                 start = c(2020, 1), frequency = 4)
+
+autoplot(macy.ts, ylab="Macy's Revenue")+
+  autolayer(ma.trailing, series = "Fitted", lwd = 1.5)+
+  autolayer(ma.trailing.pred, series = "Predicted", lwd=1.5)+
+  autolayer(valid.mean, series="Actual mean", lwd=1.5)+
+  autolayer(ma.roll.ts.mean, series ="Rolling Mean",lwd=1.5)
+
+# One Step Ahead Rolling Forecast(Rollmedian)
+
+nValid = 10
+ma.trailing.pred.rolling.median <- rep(NA, stepsAhead)
+
+for(i in 1:nValid){
+  nTrain <- n - nValid + (i-1)
+  train.ts<-window(macy.ts,start=c(2008,4),end=c(start.year, nTrain+3))
+  ma.trailing.roll.median <- rollmedian(train.ts, k = 11, align = "right") 
+  # k=9/11 is same accuracy
+  last.ma.median = tail(ma.trailing.roll.median, 1)
+  ma.trailing.pred.rolling.median[i]=last.ma.median
+}
+
+ma.roll.median.ts <- ts(ma.trailing.pred.rolling.median, 
+                 start = c(2020,1), frequency = 4)
+
+autoplot(macy.ts, ylab="Macy's Revenue", main = "Moving Average")+
+  autolayer(ma.trailing, series = "Fitted", lwd = 0.8)+
+  autolayer(ma.trailing.pred, series = "Predicted", lwd=0.8)+
+  autolayer(ma.roll.ts.mean, series ="Rolling Mean",lwd=0.8)+
+  autolayer(ma.roll.median.ts, series ="Rolling Median",lwd=0.8)
+
+# Accuracy
+
+accuracy(ma.roll.ts.mean,valid.m.ts)
+accuracy(ma.roll.median.ts,valid.m.ts)
+```
+
+# Exponential Smoothing
+
+```{r}
+aan <- ets(train.m.ts, model = 'AAN')
+ann <- ets(train.m.ts, model = 'ANN')
+aaa <- ets(train.m.ts, model = 'AAA')
+zzz <- ets(train.m.ts, model='ZZZ') # mna <- ets(train.m.ts, model = 'MNA')
+
+aan.predict <- forecast.ets(aan, h=10, level=0)
+ann.predict <- forecast.ets(ann, h=10, level=0)
+aaa.predict <- forecast.ets(aaa, h=10, level=0)
+zzz.predict <- forecast.ets(zzz, h=10, level=0)
+
+accuracy(aan.predict, valid.m.ts)
+accuracy(ann.predict, valid.m.ts)
+accuracy(aaa.predict, valid.m.ts)
+accuracy(zzz.predict, valid.m.ts) # Best "MNA"
+
+autoplot(train.m.ts,  ylab = 'Revenue',xlab = 'Time', main = 'Forecast Macy Revenue (Exponential Smoothing)')+
+  autolayer(valid.m.ts, series = 'Validation')+
+  autolayer(aan.predict, series='AAN predicted')+
+  autolayer(ann.predict, series='ANN predicted')+
+  autolayer(aaa.predict, series='AAA predicted')+
+  autolayer(zzz.predict, series='ZZZ predicted',lwd=1)
+```
+
+# Arima
+
+```{r}
+# Try Detrend and Deseasonality
+
+#(1) Detrend and Deseasonality
+ddtrain<-diff(diff(train.m.ts,1),4)
+par(mfrow=c(1,2))
+Acf(ddtrain,36,main="")
+Pacf(ddtrain,36, main="")
+par(mfrow=c(1,1))
+
+#(2) Detrend
+dttrain<-diff(train.m.ts,1)
+par(mfrow=c(1,2))
+Acf(dttrain,36,main="ACF Plot")
+Pacf(dttrain,36, main="PACF Plot")
+par(mfrow=c(1,1))
+
+#(3) Deseasonality
+dstrain<-diff(train.m.ts,4)
+par(mfrow=c(1,2))
+Acf(dstrain,36,main="")
+Pacf(dstrain,36, main="")
+par(mfrow=c(1,1))
+
+# ACF tailing off and PACF cutting off. Therefore, choose AR model. Look at PACF, choose 1. 
+
+# model 1
+am1 <- Arima(train.m.ts, order = c(1,1,1), seasonal = list(order = c(1,1,0), period = 4))
+summary(am1)
+am1.predict <- forecast(am1, h = 10, level = 0)
+autoplot(am1.predict)
+autoplot(valid.m.ts)+
+  autolayer(am1.predict)
+accuracy(am1.predict, valid.m.ts)
+checkresiduals(am1)
+
+# model 2
+am2 <- Arima(train.m.ts, order = c(2,0,1), seasonal = list(order = c(1,0,0), period = 4))
+summary(am2)
+am2.predict <- forecast(am2, h = 10, level = 0)
+autoplot(valid.m.ts)+
+  autolayer(am2.predict)
+accuracy(am2.predict, valid.m.ts)
+checkresiduals(am2)
+```
+
+# External Factors: Unemployment Rate, GDP Growth Rate (Inflation-adjusted)
+
+## Correlation Coefficient Value
+
+```{r}
+sa <- rollmean(macy.ts, k = 4, align = "right")
+newmacy <- ts.intersect(SA_M = sa, UR = ur.ts, GDPG = gdpg.ts)
+cor(x = newmacy[,2], y = newmacy[,1]) # UR
+cor(x = newmacy[,3], y = newmacy[,1]) # GDPG
+```
+
+## Split Data Set
+
+```{r}
+train.g.ts <- window(gdpg.ts, end = c(2019,4), frequency = 4)
+valid.g.ts <- window(gdpg.ts, start = c(2020,1), frequency = 4)
+
+train.u.ts <- window(ur.ts, end = c(2019,4), frequency = 4)
+valid.u.ts <- window(ur.ts, start = c(2020,1), frequency = 4)
+```
+
+## Time Series Linear Regression Models
+
+```{r}
+lm1 <- tslm(train.m.ts ~ trend + season + train.g.ts)
+summary(lm1) # R square: 0.9443
+lm1.pred <- forecast(lm1, data.frame(train.g.ts = valid.g.ts))
+accuracy(lm1.pred, valid.m.ts)
+autoplot(macy.ts, main = "lmcay ~ trend + season + gdp growth rate")+
+  autolayer(lm1$fitted.values)+
+  autolayer(lm1.pred$mean)
+
+lm2 <- tslm(train.m.ts ~ trend + season + train.u.ts)
+summary(lm2) # R square: 0.9275
+lm2.pred <- forecast(lm2, data.frame(train.u.ts = valid.u.ts))
+accuracy(lm2.pred, valid.m.ts)
+autoplot(macy.ts, main = "lmcay ~ trend + season + gdp growth rate + unemployment rate")+
+  autolayer(lm2$fitted.values)+
+  autolayer(lm2.pred$mean)
+
+lm3 <- tslm(train.m.ts ~ trend + season + train.g.ts + train.u.ts)
+summary(lm3) # R square: 0.9478
+lm3.pred <- forecast(lm3, data.frame(train.g.ts = valid.g.ts, train.u.ts = valid.u.ts))
+accuracy(lm3.pred,valid.m.ts) # Best, Lowest MAPE: 12.56
+autoplot(macy.ts, ylab = "Macy's Revenue",main = "Macy Revenue ~ trend + season + GDP growth rate + Unemployment rate")+
+  autolayer(lm3.pred$mean, series = "Predicted", lwd = 0.8)+
+  autolayer(lm3$fitted.values, series = "Fitted")
+
+# checkresiduals(lm3)
+```
+
+## ArimaX
+
+```{r}
+axm1 <- Arima(train.m.ts,order = c(2,0,1),seasonal = list(order = c(1,1,0),period = 4),xreg = train.g.ts)
+summary(axm1)
+arimax.pred <- forecast(axm1, h =10, xreg = valid.g.ts)$mean
+accuracy(arimax.pred, valid.m.ts)
+autoplot(macy.ts)+
+  autolayer(arimax.pred)
+
+axm2 <- Arima(train.m.ts,order = c(2,0,1),seasonal = list(order = c(1,1,0),period = 4),xreg = train.u.ts)
+summary(axm2)
+arimax.pred <- forecast(axm2, h =10, xreg = valid.u.ts)$mean
+accuracy(arimax.pred, valid.m.ts)
+autoplot(macy.ts)+
+  autolayer(arimax.pred)
+
+axm3 <- Arima(train.m.ts,order = c(2,0,1),seasonal = list(order = c(1,1,0),period = 4),xreg = cbind(train.u.ts,train.g.ts))
+summary(axm3)
+arimax.pred <- forecast(axm3, h =10, xreg = cbind(train.u.ts = valid.u.ts,train.g.ts = valid.g.ts))$mean
+accuracy(arimax.pred, valid.m.ts)
+autoplot(macy.ts,ylab = "Macy's Revenue", main = "ARIMAX(2,0,1)(1,1,0)[4](GDP growth rate,Unemployment rate)")+
+  autolayer(axm3$fitted, series = "ARIMAX Fitted" )+
+  autolayer(arimax.pred, series = "ARIMAX Predicted", lwd = 0.8 )
+```
+
+# Competitor Analysis: Amazon
+
+## Split Data Set
+
+```{r}
+gdpg.ts <- window(gdpg.ts,start = c(2009,1), frequency = 4)
+ur.ts <- window(ur.ts, start =c(2009,1), frequency = 4)
+
+train.a.ts <- window(ama.ts, end = c(2019,4), frequency = 4)
+valid.a.ts <- window(ama.ts, start = c(2020,1), frequency = 4)
+
+train.g.ts <- window(gdpg.ts, end = c(2019,4), frequency = 4)
+valid.g.ts <- window(gdpg.ts, start = c(2020,1), frequency = 4)
+
+train.u.ts <- window(ur.ts, end = c(2019,4), frequency = 4)
+valid.u.ts <- window(ur.ts, start = c(2020,1), frequency = 4)
+```
+
+## Arima
+
+```{r}
+#(1) Detrend and Deseasonality
+ddtrain<-diff(diff(train.a.ts,1),4)
+par(mfrow=c(1,2))
+Acf(ddtrain,36,main="")
+Pacf(ddtrain,36, main="")
+par(mfrow=c(1,1))
+
+#(2) Detrend
+dttrain<-diff(train.a.ts,1)
+par(mfrow=c(1,2))
+Acf(dttrain,36,main="ACF Plot")
+Pacf(dttrain,36, main="PACF Plot")
+par(mfrow=c(1,1))
+
+#(3) Deseasonality
+dstrain<-diff(train.a.ts,4)
+par(mfrow=c(1,2))
+Acf(dstrain,36,main="")
+Pacf(dstrain,36, main="")
+par(mfrow=c(1,1))
+
+aam <- Arima(train.a.ts, order = c(1,1,0), seasonal = list(order=c(1,1,0),period=4))
+aam.predict <- forecast(aam, h = 10,level = 0)
+autoplot(valid.a.ts)+
+  autolayer(aam.predict)
+accuracy(aam.predict,valid.a.ts)
+checkresiduals(aam)
+```
+
+## External Factors: Unemployment Rate, GDP Growth Rate (Inflation-adjusted)
+
+```{r}
+# Correlation Coefficient Value
+
+sa.ama <- rollmean(ama.ts, k = 4, align = "right")
+newama <- ts.intersect(SA_M = sa.ama, UR = ur.ts, GDPG = gdpg.ts)
+
+cor(x = newama[,2], y = newama[,1]) # -0.4943394
+cor(x = newama[,3], y = newama[,1]) # 0.1152857
+
+# Linear Regression
+
+alm1 <- tslm(train.a.ts ~ trend + season + train.g.ts)
+alm1.pred <- forecast(alm1, data.frame(train.g.ts = valid.g.ts))
+accuracy(alm1.pred,valid.a.ts)
+autoplot(ama.ts, main = "Amazon Revenue ~ trend + season + GDP growth rate")+
+  autolayer(alm1$fitted.values)+
+  autolayer(alm1.pred$mean)
+
+alm2 <- tslm(train.a.ts ~ trend + season + train.u.ts)
+summary(alm2) # 0.9485
+alm2.pred <- forecast(alm2, data.frame(train.u.ts = valid.u.ts))
+accuracy(alm2.pred,valid.a.ts)
+almp2 <- autoplot(ama.ts, ylab="Amazon Revenue", main = "Revenue ~ Unemployment rate")+
+  autolayer(alm2$fitted.values, series = "Fitted")+
+  autolayer(alm2.pred$mean, series = "Predicted", lwd = 0.8)+ theme(legend.position = c(0.25, 0.8))
+
+alm3 <- tslm(train.a.ts ~ trend + season + train.g.ts + train.u.ts)
+alm3.pred <- forecast(alm3, data.frame(train.u.ts = valid.u.ts, train.g.ts = valid.g.ts))
+accuracy(alm3.pred,valid.a.ts)
+almp3 <- autoplot(ama.ts, ylab="Amazon Revenue", main = "Revenue ~ GDP growth rate + Unemployment rate")+
+  autolayer(alm3$fitted.values, series = "Fitted")+
+  autolayer(alm3.pred$mean, series = "Predicted", lwd = 0.8)+ theme(legend.position = c(0.25, 0.8))
+
+almp2 + almp3
+
+# ArimaX
+
+aaxm1 <- Arima(train.a.ts,order = c(1,1,0),seasonal = list(order = c(1,1,0),period = 4),xreg = train.g.ts)
+summary(aaxm1)
+arimax.pred <- forecast(aaxm1, h =10, xreg = valid.g.ts)$mean
+accuracy(arimax.pred, valid.a.ts)
+autoplot(ama.ts, ylab = "Amazon Revenue", main = "ARIMAX(1,1,0)(1,1,0)[4](GDP Growth Rate)")+
+  autolayer(aaxm1$fitted, series = "ARIMAX Fitted")+
+  autolayer(arimax.pred, series = "ARIMAX Predicted", lwd = 0.8)
+
+aaxm2 <- Arima(train.a.ts,order = c(1,1,0),seasonal = list(order = c(1,1,0),period = 4),xreg = train.u.ts)
+summary(aaxm2)
+arimax.pred <- forecast(aaxm2, h =10, xreg = valid.u.ts)$mean
+accuracy(arimax.pred, valid.a.ts)
+autoplot(ama.ts, ylab = "Amazon Revenue", main = "ARIMAX(1,1,0)(1,1,0)[4](Unemployment Rate)")+
+  autolayer(aaxm2$fitted, series = "ARIMAX Fitted")+
+  autolayer(arimax.pred, series = "ARIMAX Predicted", lwd = 0.8)
+
+aaxm3 <- Arima(train.a.ts,order = c(1,1,0),seasonal = list(order = c(1,1,0),period = 4),xreg = cbind(train.u.ts,train.g.ts))
+summary(aaxm3)
+arimax.pred <- forecast(aaxm3, h =10, xreg = cbind(train.u.ts = valid.u.ts,train.g.ts = valid.g.ts))$mean
+accuracy(arimax.pred, valid.a.ts)
+autoplot(ama.ts, ylab = "Amazon Revenue", main = "ARIMAX(1,1,0)(1,1,0)[4](GDP Growth Rate + Unemployment Rate)")+
+  autolayer(aaxm3$fitted, series = "ARIMAX Fitted")+
+  autolayer(arimax.pred, series = "ARIMAX Predicted", lwd = 0.8)
+```
+
+
+
