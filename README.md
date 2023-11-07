@@ -1,6 +1,3 @@
-# [R Toolkit](https://github.com/YyDuanmu/R/tree/main/toolkit)
-
-Tool Kit based on previous academical projects and projects in work/internship.
 
 # R Projects
 
